@@ -86,10 +86,5 @@ func (c *client) ApplyJob(name string, podSpec *corev1apply.PodSpecApplyConfigur
 			},
 		},
 	}, metav1.ApplyOptions{FieldManager: "kinko-field-manager"})
-
-	if err != nil {
-		fmt.Println("Error creating job: ", err)
-		return err
-	}
-	return nil
+	return err
 }

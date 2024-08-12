@@ -6,12 +6,21 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/gane5hvarma/build_tool/kube"
 	v1 "k8s.io/api/core/v1"
 	corev1apply "k8s.io/client-go/applyconfigurations/core/v1"
 )
 
 type KanikoSecret interface {
 	GetSecretData() map[string][]byte
+}
+
+type Kaniko struct {
+	kubeclient kube.Client
+}
+
+func New(client kube.Client) *Kaniko {
+	return &Kaniko{kubeclient: client}
 }
 
 type dockerSecret struct {
@@ -28,12 +37,38 @@ type awsSecret struct {
 var awsSecretVal *awsSecret
 var dockerSecretVal *dockerSecret
 
-const DOCKER_SECRET = "DOCKER"
-const AWS_SECRET = "AWS"
+const DOCKER_SECRET = "docker"
+const AWS_SECRET = "s3"
+const KANIKOJOB = "kanikojob"
+const DOCKER_SECRET_NAME = "docker-secret"
+
+func (kn *Kaniko) CreateSecrets(buildcontexttype string) error {
+	buildContextSecretName := fmt.Sprintf("%s-secret", buildcontexttype)
+
+	secret, err := generateSecret(DOCKER_SECRET)
+	if err != nil {
+		return err
+	}
+	err = kn.kubeclient.ApplySecret(DOCKER_SECRET_NAME, secret.GetSecretData(), "docker")
+	if err != nil {
+		return err
+	}
+
+	secret, err = generateSecret(buildcontexttype)
+	if err != nil {
+		return err
+	}
+
+	err = kn.kubeclient.ApplySecret(buildContextSecretName, secret.GetSecretData(), buildcontexttype)
+	if err != nil {
+		return err
+	}
+	return nil
+}
 
 func (ds *dockerSecret) GetSecretData() map[string][]byte {
 	auth := base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", ds.username, ds.password)))
-	server := "https://index.docker.io/v1/" // hardcoded but can be extended different registries
+	server := os.Getenv("DOCKER_SERVER")
 	dockerConfig := map[string]map[string]map[string]string{
 		"auths": {
 			server: {
@@ -41,11 +76,7 @@ func (ds *dockerSecret) GetSecretData() map[string][]byte {
 			},
 		},
 	}
-	dockerConfigJSON, err := json.Marshal(dockerConfig)
-	if err != nil {
-		fmt.Printf("Error marshaling Docker config JSON: %v\n", err)
-		return nil
-	}
+	dockerConfigJSON, _ := json.Marshal(dockerConfig)
 	secret := map[string][]byte{
 		v1.DockerConfigJsonKey: dockerConfigJSON,
 	}
@@ -83,7 +114,7 @@ func (aws *awsSecret) GetSecretData() map[string][]byte {
 	}
 }
 
-func GenerateSecret(secretType string) (KanikoSecret, error) {
+func generateSecret(secretType string) (KanikoSecret, error) {
 	switch secretType {
 	case DOCKER_SECRET:
 		return getDockerSecret(), nil
@@ -102,7 +133,6 @@ func getImage() *string {
 	return &image
 }
 
-// todo args are hardcoded. have to change
 func getArgs(imageDestination string, buildContextLocation string) []string {
 	return []string{
 		fmt.Sprintf("--destination=%s", imageDestination),
@@ -110,12 +140,11 @@ func getArgs(imageDestination string, buildContextLocation string) []string {
 	}
 }
 
-func getEnv() []corev1apply.EnvVarApplyConfiguration {
+func getEnv(awsSecret string) []corev1apply.EnvVarApplyConfiguration {
 	AWS_ACCESS_KEY_ID := "AWS_ACCESS_KEY_ID"
 	AWS_REGION := "AWS_REGION"
 	val := os.Getenv(AWS_REGION)
 	AWS_SECRET_ACCESS_KEY := "AWS_SECRET_ACCESS_KEY"
-	awsSecret := "aws-secret"
 	return []corev1apply.EnvVarApplyConfiguration{
 		{
 			Name:  &AWS_REGION,
@@ -147,7 +176,7 @@ func getEnv() []corev1apply.EnvVarApplyConfiguration {
 }
 
 func getVolumeMounts() []corev1apply.VolumeMountApplyConfiguration {
-	dockerSecretName := "docker-secret"
+	dockerSecretName := DOCKER_SECRET_NAME
 	dockerMountPath := "/kaniko/.docker"
 	return []corev1apply.VolumeMountApplyConfiguration{
 		{
@@ -157,8 +186,8 @@ func getVolumeMounts() []corev1apply.VolumeMountApplyConfiguration {
 	}
 }
 
-func GenerateJobPodSpec(destination string, buildContextLocation string) *corev1apply.PodSpecApplyConfiguration {
-	secretName := "docker-secret"
+func generateJobPodSpec(destination string, buildContextLocation string, buildContextType string) *corev1apply.PodSpecApplyConfiguration {
+	secretName := DOCKER_SECRET_NAME
 	dockerkey := ".dockerconfigjson"
 	path := "config.json"
 	restartPolicy := v1.RestartPolicyNever
@@ -168,7 +197,7 @@ func GenerateJobPodSpec(destination string, buildContextLocation string) *corev1
 				Name:         getName(),
 				Image:        getImage(),
 				Args:         getArgs(destination, buildContextLocation),
-				Env:          getEnv(),
+				Env:          getEnv(fmt.Sprintf("%s-secret", buildContextType)),
 				VolumeMounts: getVolumeMounts(),
 			},
 		},
@@ -191,4 +220,13 @@ func GenerateJobPodSpec(destination string, buildContextLocation string) *corev1
 		},
 	}
 	return &podSpec
+}
+
+func (kn *Kaniko) CreateJob(jobname string, location string, buildContextType string) error {
+	dockerUsername := os.Getenv("DOCKER_USERNAME")
+	dockerRepo := os.Getenv("DOCKER_REPO")
+	dockerTag := os.Getenv("DOCKER_TAG")
+	destination := fmt.Sprintf("%s/%s:%s", dockerUsername, dockerRepo, dockerTag)
+	podSpec := generateJobPodSpec(destination, location, buildContextType)
+	return kn.kubeclient.ApplyJob(jobname, podSpec)
 }

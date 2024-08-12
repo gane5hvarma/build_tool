@@ -4,7 +4,6 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
-	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -49,19 +48,15 @@ func walk(projectDir string, writer *tar.Writer) filepath.WalkFunc {
 }
 
 func CompressDirectory(projectDir string) (*bytes.Buffer, error) {
-	fmt.Println(projectDir)
 	var buf bytes.Buffer
 	gzw := gzip.NewWriter(&buf)
 	defer gzw.Close()
-
 	tw := tar.NewWriter(gzw)
 	defer tw.Close()
-
 	// Walk the project directory and add files to the tar writer
 	err := filepath.Walk(projectDir, walk(projectDir, tw))
 	if err != nil {
-		return nil, fmt.Errorf("")
-
+		return nil, err
 	}
 	return &buf, nil
 }

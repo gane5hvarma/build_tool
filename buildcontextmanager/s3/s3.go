@@ -26,7 +26,6 @@ const aws_region = "AWS_REGION"
 const bucket = "bucket"
 
 func (s *s3) Upload(buf *bytes.Buffer, key string) (string, error) {
-	fmt.Println(s.config)
 	session, err := session.NewSession(&aws.Config{
 		Region:      aws.String(s.config[aws_region]),
 		Credentials: credentials.NewStaticCredentials(s.config[aws_access_key_id], s.config[aws_secret_access_key], ""),
